@@ -11,14 +11,12 @@
 #ifndef _FEM_H_
 #define _FEM_H_
 
-#include "gmshc.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define ErrorScan(a) femErrorScan(a, __LINE__, __FILE__)
-#define ErrorGmsh(a) femErrorGmsh(a, __LINE__, __FILE__)
 #define Error(a) femError(a, __LINE__, __FILE__)
 #define Warning(a) femWarning(a, __LINE__, __FILE__)
 #define FALSE 0
@@ -34,13 +32,12 @@ typedef enum {FEM_FULL,FEM_BAND} femSolverType;
 // SOLVEUR BANDE
 typedef enum {FEM_NO,FEM_XNUM,FEM_YNUM} femRenumType;
 
-
 typedef struct {
   int nNodes;
   double *X;
   double *Y;
-  // SOLVEUR BANDE
-  int*number;
+  /////////////////solveur bande
+  int *number;
 } femNodes;
 
 typedef struct {
@@ -183,20 +180,21 @@ void femFullSystemAlloc(femFullSystem *mySystem, int size);
 double *femFullSystemEliminate(femFullSystem *mySystem);
 void femFullSystemConstrain(femFullSystem *mySystem, int myNode, double value);
 
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /* Ensemble des fonctions liées au solveur bande */
-femBandSystem* femBandSystemCreate(int size, int band);
-void femBandSystemFree(femBandSystem* myBandSystem);
-void femBandSystemInit(femBandSystem *myBand);
-void femBandSystemPrint(femBandSystem *myBand);
-void femBandSystemPrintInfos(femBandSystem *myBand);
-double* femBandSystemEliminate(femBandSystem *myBand);
-void femBandSystemAssemble(femBandSystem* myBandSystem, double *Aloc, double *Bloc, int *map, int nLoc);
-double femBandSystemGet(femBandSystem* myBandSystem, int i, int j);
-void femBandSystemConstrain(femBandSystem *mySystem, int myNode, double myValue);
+femBandSystem*       femBandSystemCreate(int size, int band);
+void                 femBandSystemFree(femBandSystem* myBandSystem);
+void                 femBandSystemInit(femBandSystem *myBand);
+void                 femBandSystemPrint(femBandSystem *myBand);
+void                 femBandSystemPrintInfos(femBandSystem *myBand);
+double*              femBandSystemEliminate(femBandSystem *myBand);
+void                 femBandSystemAssemble(femBandSystem* myBandSystem, double *Aloc, double *Bloc, int *map, int nLoc);
+double               femBandSystemGet(femBandSystem* myBandSystem, int i, int j);
+void                 femBandSystemConstrain(femBandSystem *mySystem, int myNode, double myValue);
 
-void femMeshRenumber(femMesh *theMesh, femRenumType renumType);
-int femMeshComputeBand(femMesh *theMesh);
+void                 femMeshRenumber(femMesh *theMesh, femRenumType renumType);
+int                  femMeshComputeBand(femMesh *theMesh);
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 double femMin(double *x, int n);

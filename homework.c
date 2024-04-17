@@ -1,13 +1,14 @@
 #include "fem.h"
 
-//
-// Ici, vous pouvez définir votre géométrie :-)
-//  (1) Raffiner intelligemment.... (yes )
-//  (2) Construire la geometrie avec OpenCascade
-//  (3) Construire la geometrie avec les outils de GMSH
-//  (4) Obtenir la geometrie en lisant un fichier .geo de GMSH
+// Il faut un fifrelin generaliser ce code.....
+//  (1) Ajouter l'axisymétrique !    (mandatory)
+//  (2) Ajouter les conditions de Neumann !   (mandatory)
+//  (3) Ajouter les conditions en normal et tangentiel !   (strongly advised)
+//  (4) Et remplacer le solveur plein par un truc un fifrelin plus subtil  (mandatory)
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////:/
+
+/////////////////////////////////////////////////////////////////////////////////////
+/* Zone de renumérotation */
 #ifndef NORENUMBER 
 
 double *theGlobalCoord;
@@ -97,340 +98,245 @@ void femBandSystemAssemble(femBandSystem* myBandSystem, double *Aloc, double *Bl
 
 
 #endif
+/////////////////////////////////////////////////////////////////////////////////////
 
+void femElasticityAssembleElements(femProblem *theProblem) {
+  //femFullSystem *theSystem = theProblem->system;
+  femBandSystem *theSystem = theProblem->bandSystem;
+  femIntegration *theRule = theProblem->rule;
+  femDiscrete *theSpace = theProblem->space;
+  femGeo *theGeometry = theProblem->geometry;
+  femNodes *theNodes = theGeometry->theNodes;
+  femMesh *theMesh = theGeometry->theElements;
+  double x[4], y[4], phi[4], dphidxsi[4], dphideta[4], dphidx[4], dphidy[4];
+  int iElem, iInteg, iEdge, i, j, d, map[4], mapX[4], mapY[4];
+  int nLocal = theMesh->nLocalNode;
+  double a = theProblem->A;
+  double b = theProblem->B;
+  double c = theProblem->C;
+  double rho = theProblem->rho;
+  double gx = theProblem->gx;
+  double gy = theProblem->gy;
+  double **A = theSystem->A;
+  double *B = theSystem->B;
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  for (iElem = 0; iElem < theMesh->nElem; iElem++) {
+    for (j = 0; j < nLocal; j++) {
+      map[j] = theMesh->elem[iElem * nLocal + j];
+      mapX[j] = 2 * map[j];
+      mapY[j] = 2 * map[j] + 1;
+      x[j] = theNodes->X[map[j]];
+      y[j] = theNodes->Y[map[j]];
+    }
 
-double geoSize(double x, double y) {
+    for (iInteg = 0; iInteg < theRule->n; iInteg++) {
+      double xsi = theRule->xsi[iInteg];
+      double eta = theRule->eta[iInteg];
+      double weight = theRule->weight[iInteg];
+      femDiscretePhi2(theSpace, xsi, eta, phi);
+      femDiscreteDphi2(theSpace, xsi, eta, dphidxsi, dphideta);
 
-  femGeo *theGeometry = geoGetGeometry();
-  return theGeometry->h ;//* (1.0 - 0.5 * x);
+      double dxdxsi = 0.0;
+      double dxdeta = 0.0;
+      double dydxsi = 0.0;
+      double dydeta = 0.0;
+      for (i = 0; i < theSpace->n; i++) {
+        dxdxsi += x[i] * dphidxsi[i];
+        dxdeta += x[i] * dphideta[i];
+        dydxsi += y[i] * dphidxsi[i];
+        dydeta += y[i] * dphideta[i];
+      }
+      double jac = dxdxsi * dydeta - dxdeta * dydxsi;
+      if (jac < 0.0)
+        printf("Negative jacobian! Your mesh is oriented in reverse. The normals will be wrong\n");
+      jac = fabs(jac);
+      //printf("jac = %lf\n", jac);
+      for (i = 0; i < theSpace->n; i++) {
+        dphidx[i] = (dphidxsi[i] * dydeta - dphideta[i] * dydxsi) / jac;
+        dphidy[i] = (dphideta[i] * dxdxsi - dphidxsi[i] * dxdeta) / jac;
+      }
+      for (i = 0; i < theSpace->n; i++) {
+        for (j = 0; j < theSpace->n; j++) {
+          A[mapX[i]][mapX[j]] += (dphidx[i] * a * dphidx[j] + dphidy[i] * c * dphidy[j]) * jac * weight;
+          A[mapX[i]][mapY[j]] += (dphidx[i] * b * dphidy[j] + dphidy[i] * c * dphidx[j]) * jac * weight;
+          A[mapY[i]][mapX[j]] += (dphidy[i] * b * dphidx[j] + dphidx[i] * c * dphidy[j]) * jac * weight;
+          A[mapY[i]][mapY[j]] += (dphidy[i] * a * dphidy[j] + dphidx[i] * c * dphidx[j]) * jac * weight;
+        }
+      }
+      for (i = 0; i < theSpace->n; i++) {
+        B[mapX[i]] += phi[i] * gx * rho * jac * weight;
+        B[mapY[i]] += phi[i] * gy * rho * jac * weight;
+        //printf("B[mapX[i]] = %lf\n", B[mapX[i]]);
+        //printf("B[mapY[i]] = %lf\n", B[mapY[i]]);
+        
+
+      }
+      
+      
+    }
+    
+  }
 }
 
-void geoMeshGenerate(void) {
-  femGeo *theGeometry = geoGetGeometry();
-  double Lx = 1.0;
-  double Ly = 2.0;
-  theGeometry->LxPlate = Lx;
-  theGeometry->LyPlate = Ly;
-  theGeometry->h = Lx * 0.03;
-  theGeometry->elementType = FEM_TRIANGLE;
+void femElasticityAssembleNeumann(femProblem *theProblem) {
+  femBandSystem *theSystem = theProblem->bandSystem;
+  femIntegration *theRule = theProblem->ruleEdge;
+  femDiscrete *theSpace = theProblem->spaceEdge;
+  femGeo *theGeometry = theProblem->geometry;
+  femNodes *theNodes = theGeometry->theNodes;
+  femMesh *theEdges = theGeometry->theEdges;
 
-  geoSetSizeCallback(geoSize);
+  // Ici, on a affaire à des arêtes (2D) -> tableaux à deux dimensions
+  double x[2], y[2], phi[2];
+  int iBnd, iElem, iInteg, iEdge, i, j, d, map[2];
+  int nLocal = 2;
+  double *B = theSystem->B;
 
-  double w = theGeometry->LxPlate;
-  double h = theGeometry->LyPlate;
+  // On parcourt les conditions (une condition est associée à un domaine)
+  for (iBnd = 0; iBnd < theProblem->nBoundaryConditions; iBnd++) {
+    femBoundaryCondition *theCondition = theProblem->conditions[iBnd];
+    femBoundaryType type = theCondition->type;
+    double value = theCondition->value1;
 
-  double w1 = w - w / 8.0;
-  double h1 = h - w / 8.0;
-  
-  int ierr; 
+    // S'il n'y a pas de condition frontière de type Neumann, on passe à l'itération suivante
+    if(type != NEUMANN_X && type != NEUMANN_Y && type != NEUMANN_N && type != NEUMANN_T){
+      continue;
+    }
 
-  
-  
-  // Creation de la plaque principale 
-  int idPlate = gmshModelOccAddRectangle(-w/2.0,-h/2.0,0.0,w,h,-1,0.0,&ierr); 
-  ErrorGmsh(ierr);
-  // Creation de la plaque à decouper
-  int idPlatecut = gmshModelOccAddRectangle(-w1/2.0,-h1/2.0,0.0,w1,h1,-1,0.0,&ierr); 
-  ErrorGmsh(ierr);
+    // On parcourt les arêtes du domaine contraint
+    for (iEdge = 0; iEdge < theCondition->domain->nElem; iEdge++) {
+      iElem = theCondition->domain->elem[iEdge];
+      for (j = 0; j < nLocal; j++) {
+        map[j] = theEdges->elem[iElem * nLocal + j];
+        x[j] = theNodes->X[map[j]];
+        y[j] = theNodes->Y[map[j]];
+      }
 
-  // Ajout des points pour les triangles à cut sur la plaque principale
-  int idFirstPoint = gmshModelOccAddPoint(-w/2.0, -h/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSecondPoint = gmshModelOccAddPoint(-w/2.0 + w/4.0, -h/2.0, 0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idThirdPoint = gmshModelOccAddPoint(-w/2.0, -h/2.0 + w/4.0, 0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idFourthPoint = gmshModelOccAddPoint(-w/2.0, h/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idFifthPoint = gmshModelOccAddPoint(-w/2.0 + w/4.0, h/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSixthPoint = gmshModelOccAddPoint(-w/2.0, h/2.0 - w/4.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSeventhPoint = gmshModelOccAddPoint(w/2.0, h/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idEighthPoint = gmshModelOccAddPoint(w/2.0 - w/4.0, h/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idNinthPoint = gmshModelOccAddPoint(w/2.0, h/2.0 - w/4.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idTenthPoint = gmshModelOccAddPoint(w/2.0, -h/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idEleventhPoint = gmshModelOccAddPoint(w/2.0 - w/4.0, -h/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idTwelfthPoint = gmshModelOccAddPoint(w/2.0, -h/2.0 + w/4.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  // Ajout des lignes pour les triangles à cut sur la plaque principale
-  int idFirstLine = gmshModelOccAddLine(idFirstPoint, idSecondPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSecondLine = gmshModelOccAddLine(idSecondPoint, idThirdPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idThirdLine = gmshModelOccAddLine(idThirdPoint, idFirstPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idFourthLine = gmshModelOccAddLine(idFourthPoint, idFifthPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idFifthLine = gmshModelOccAddLine(idFifthPoint, idSixthPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSixthLine = gmshModelOccAddLine(idSixthPoint, idFourthPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSeventhLine = gmshModelOccAddLine(idSeventhPoint, idEighthPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idEighthLine = gmshModelOccAddLine(idEighthPoint, idNinthPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idNinthLine = gmshModelOccAddLine(idNinthPoint, idSeventhPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idTenthLine = gmshModelOccAddLine(idTenthPoint, idEleventhPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idEleventhLine = gmshModelOccAddLine(idEleventhPoint, idTwelfthPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idTwelfthLine = gmshModelOccAddLine(idTwelfthPoint, idTenthPoint, -1, &ierr);
-  ErrorGmsh(ierr);
-  // Ajout de la boucle de courbe pour les triangles à cut sur la plaque principale
-  int lines[] = {idFirstLine, idSecondLine, idThirdLine};
-  int linesloop = gmshModelOccAddCurveLoop(lines, 3, -1, &ierr);
-  int lines_bis[] = {idFourthLine, idFifthLine, idSixthLine};
-  int linesloop_bis = gmshModelOccAddCurveLoop(lines_bis, 3, -1, &ierr);
-  int lines_ter[] = {idSeventhLine, idEighthLine, idNinthLine};
-  int linesloop_ter = gmshModelOccAddCurveLoop(lines_ter, 3, -1, &ierr);
-  int lines_quater[] = {idTenthLine, idEleventhLine, idTwelfthLine};
-  int linesloop_quater = gmshModelOccAddCurveLoop(lines_quater, 3, -1, &ierr);
-  // Ajout de la surface plane pour les triangles à cut sur la plaque principale
-  int surfaces[] = {linesloop};
-  int idFirstSurface = gmshModelOccAddPlaneSurface(surfaces, 1, -1, &ierr);
-  ErrorGmsh(ierr);
-  int surfaces_bis[] = {linesloop_bis};
-  int idSecondSurface = gmshModelOccAddPlaneSurface(surfaces_bis, 1, -1, &ierr);
-  ErrorGmsh(ierr);
-  int surfaces_ter[] = {linesloop_ter};
-  int idThirdSurface = gmshModelOccAddPlaneSurface(surfaces_ter, 1, -1, &ierr);
-  ErrorGmsh(ierr);
-  int surfaces_quater[] = {linesloop_quater};
-  int idFourthSurface = gmshModelOccAddPlaneSurface(surfaces_quater, 1, -1, &ierr);
-  ErrorGmsh(ierr);
+      // Calcul du Jacobien pour l'intégrale de ligne
+      double tx = x[1] - x[0];
+      double ty = y[1] - y[0];
+      double length = hypot(tx, ty);
+      double jac = length / 2.0;
+      
+      double f_x = 0.0;
+      double f_y = 0.0;
+      if (type == NEUMANN_X) {
+        f_x = value;
+      }
+      if (type == NEUMANN_Y) {
+        f_y = value;
+      }
 
-  // Ajout des points pour les triangles à cut sur la plaque à decouper
-  int idFirstPointcut = gmshModelOccAddPoint(-w1 / 2.0, -h1 / 2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSecondPointcut = gmshModelOccAddPoint(-w1 / 2.0 + w1 / 4.0, -h1 / 2.0, 0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idThirdPointcut = gmshModelOccAddPoint(-w1 / 2.0, -h1 / 2.0 + w1 / 4.0, 0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idFourthPointcut = gmshModelOccAddPoint(-w1/2.0, h1/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idFifthPointcut = gmshModelOccAddPoint(-w1/2.0 + w1/4.0, h1/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSixthPointcut = gmshModelOccAddPoint(-w1/2.0, h1/2.0 - w1/4.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSeventhPointcut = gmshModelOccAddPoint(w1/2.0, h1/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idEighthPointcut = gmshModelOccAddPoint(w1/2.0 - w1/4.0, h1/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idNinthPointcut = gmshModelOccAddPoint(w1/2.0, h1/2.0 - w1/4.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idTenthPointcut = gmshModelOccAddPoint(w1/2.0, -h1/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idEleventhPointcut = gmshModelOccAddPoint(w1/2.0 - w1/4.0, -h1/2.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idTwelfthPointcut = gmshModelOccAddPoint(w1/2.0, -h1/2.0 + w1/4.0, 0.0, 5, -1, &ierr);
-  ErrorGmsh(ierr);
-  // Ajout des lignes pour les triangles à cut sur la plaque à decouper
-  int idFirstLinecut = gmshModelOccAddLine(idFirstPointcut, idSecondPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSecondLinecut = gmshModelOccAddLine(idSecondPointcut, idThirdPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idThirdLinecut = gmshModelOccAddLine(idThirdPointcut, idFirstPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idFourthLinecut = gmshModelOccAddLine(idFourthPointcut, idFifthPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idFifthLinecut = gmshModelOccAddLine(idFifthPointcut, idSixthPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSixthLinecut = gmshModelOccAddLine(idSixthPointcut, idFourthPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idSeventhLinecut = gmshModelOccAddLine(idSeventhPointcut, idEighthPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idEighthLinecut = gmshModelOccAddLine(idEighthPointcut, idNinthPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idNinthLinecut = gmshModelOccAddLine(idNinthPointcut, idSeventhPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idTenthLinecut = gmshModelOccAddLine(idTenthPointcut, idEleventhPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idEleventhLinecut = gmshModelOccAddLine(idEleventhPointcut, idTwelfthPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  int idTwelfthLinecut = gmshModelOccAddLine(idTwelfthPointcut, idTenthPointcut, -1, &ierr);
-  ErrorGmsh(ierr);
-  // Ajout de la boucle de courbe pour les triangles à cut sur la plaque à decouper
-  int linescut[] = {idFirstLinecut, idSecondLinecut, idThirdLinecut};
-  int linesloopcut = gmshModelOccAddCurveLoop(linescut, 3, -1, &ierr);
-  ErrorGmsh(ierr);
-  int lines_biscut[] = {idFourthLinecut, idFifthLinecut, idSixthLinecut};
-  int linesloop_biscut = gmshModelOccAddCurveLoop(lines_biscut, 3, -1, &ierr);
-  ErrorGmsh(ierr);
-  int lines_tercut[] = {idSeventhLinecut, idEighthLinecut, idNinthLinecut};
-  int linesloop_tercut = gmshModelOccAddCurveLoop(lines_tercut, 3, -1, &ierr);
-  ErrorGmsh(ierr);
-  int lines_quatercut[] = {idTenthLinecut, idEleventhLinecut, idTwelfthLinecut};
-  int linesloop_quatercut = gmshModelOccAddCurveLoop(lines_quatercut, 3, -1, &ierr);
-  ErrorGmsh(ierr);
-  // Ajout de la surface plane pour les triangles à cut sur la plaque à decouper
-  int surfacescut[] = {linesloopcut};
-  int idFirstSurfacecut = gmshModelOccAddPlaneSurface(surfacescut, 1, -1, &ierr);
-  ErrorGmsh(ierr);
-  int surfaces_biscut[] = {linesloop_biscut};
-  int idSecondSurfacecut = gmshModelOccAddPlaneSurface(surfaces_biscut, 1, -1, &ierr);
-  ErrorGmsh(ierr);
-  int surfaces_tercut[] = {linesloop_tercut};
-  int idThirdSurfacecut = gmshModelOccAddPlaneSurface(surfaces_tercut, 1, -1, &ierr);
-  ErrorGmsh(ierr);
-  int surfaces_quatercut[] = {linesloop_quatercut};
-  int idFourthSurfacecut = gmshModelOccAddPlaneSurface(surfaces_quatercut, 1, -1, &ierr);
-  ErrorGmsh(ierr);
+      //
+      // A completer :-)
+      // Attention, pour le normal tangent on calcule la normale (sortante) au SEGMENT, surtout PAS celle de constrainedNodes
+      // Une petite aide pour le calcul de la normale :-)
+      double nx =  ty / length;
+      double ny = -tx / length;
+      if (type == NEUMANN_N) {
+        f_x = value * nx;
+        f_y = value * ny;
+      }
+      if (type == NEUMANN_T) {
+        f_x = value * (-ny);
+        f_y = value * nx;
+      }
 
-  // On découpe la plaque principale avec les triangles
-  int base[] = {2,idPlate};
-  int firstSurface[] = {2,idFirstSurface};
-  int secondSurface[] = {2,idSecondSurface};
-  int thirdSurface[] = {2,idThirdSurface};
-  int fourthSurface[] = {2,idFourthSurface};
-  gmshModelOccCut(base,2,firstSurface,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
-  gmshModelOccCut(base,2,secondSurface,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
-  gmshModelOccCut(base,2,thirdSurface,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
-  gmshModelOccCut(base,2,fourthSurface,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
+      for (iInteg = 0; iInteg < theRule->n; iInteg++) {
+        double xsi = theRule->xsi[iInteg];
+        double weight = theRule->weight[iInteg];
+        femDiscretePhi(theSpace, xsi, phi);
+        for (i = 0; i < theSpace->n; i++) {
+          B[2*map[i] + 0] += jac * weight * phi[i] * f_x;
+          B[2*map[i] + 1] += jac * weight * phi[i] * f_y;
+          //printf("B[2*map[i] + 0] = %lf\n", B[2*map[i] + 0]);
+          //printf("B[2*map[i] + 1] = %lf\n", B[2*map[i] + 1]);
+        }
+      }
+    }
+  }
+}
+void femElasticityApplyDirichlet(femProblem *theProblem) {
+  //femFullSystem *theSystem = theProblem->system;
+  femBandSystem *theSystem = theProblem->bandSystem;
+  femGeo *theGeometry = theProblem->geometry;
+  femNodes *theNodes = theGeometry->theNodes;
 
-  // On découpe la plaque à decouper avec les triangles
-  int basecut[] = {2,idPlatecut};
-  int firstSurfacecut[] = {2,idFirstSurfacecut};
-  int secondSurfacecut[] = {2,idSecondSurfacecut};
-  int thirdSurfacecut[] = {2,idThirdSurfacecut};
-  int fourthSurfacecut[] = {2,idFourthSurfacecut};
-  gmshModelOccCut(basecut,2,firstSurfacecut,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
-  gmshModelOccCut(basecut,2,secondSurfacecut,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
-  gmshModelOccCut(basecut,2,thirdSurfacecut,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
-  gmshModelOccCut(basecut,2,fourthSurfacecut,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
- 
-  
-  
-  // On supprime les surfaces de la plaque principale
-  gmshModelOccCut(base,2,basecut,2,NULL,NULL,NULL,NULL,NULL,-1,1,1,&ierr);
-  ErrorGmsh(ierr);
+  for (int node = 0; node < theNodes->nNodes; node++) {
+    femConstrainedNode *theConstrainedNode = &theProblem->constrainedNodes[node];
+    if (theConstrainedNode->type == UNDEFINED)
+      continue;
+    femBoundaryType type = theConstrainedNode->type;
 
-  
-  //////////////////////////////////////////////////////////////////////////////////////////gmshModelGeoAddBSpline();
+    if (type == DIRICHLET_X) {
+      double value = theConstrainedNode->value1;
+      //femFullSystemConstrain(theSystem, 2 * node + 0, value);
+      femBandSystemConstrain(theSystem, 2 * node + 0, value);
+    }
+    if (type == DIRICHLET_Y) {
+      double value = theConstrainedNode->value1;
+      //femFullSystemConstrain(theSystem, 2 * node + 1, value);
+      femBandSystemConstrain(theSystem, 2 * node + 1, value);
+    }
+    if (type == DIRICHLET_XY) {
+      double value_x = theConstrainedNode->value1;
+      double value_y = theConstrainedNode->value2;
+      //femFullSystemConstrain(theSystem, 2 * node + 0, value_x);
+      //femFullSystemConstrain(theSystem, 2 * node + 1, value_y);
+      femBandSystemConstrain(theSystem, 2 * node + 0, value_x);
+      femBandSystemConstrain(theSystem, 2 * node + 1, value_y);
+    }
 
+    if (type == DIRICHLET_N) {
+      double value = theConstrainedNode->value1;
+      double nx = theConstrainedNode->nx;
+      double ny = theConstrainedNode->ny;
+      // A completer :-)
+      //femFullSystemConstrain(theSystem, 2 * node + 0, value * nx);
+      //femFullSystemConstrain(theSystem, 2 * node + 1, value * ny);
+      femBandSystemConstrain(theSystem, 2 * node + 0, value * nx);
+      femBandSystemConstrain(theSystem, 2 * node + 1, value * ny);
 
-  // On synchronise le modèle
-  geoSetSizeCallback(geoSize);            
-  gmshModelOccSynchronize(&ierr);       
-  gmshOptionSetNumber("Mesh.SaveAll", 1, &ierr);
-  gmshModelMeshGenerate(2, &ierr);
-
-  return;
+    }
+    if (type == DIRICHLET_T) {
+      double value = theConstrainedNode->value1;
+      double nx = theConstrainedNode->nx;
+      double ny = theConstrainedNode->ny;
+      // A completer :-)
+      //femFullSystemConstrain(theSystem, 2 * node + 0, value * ny);
+      //femFullSystemConstrain(theSystem, 2 * node + 1, value * nx);
+      femBandSystemConstrain(theSystem, 2 * node + 0, value * ny);
+      femBandSystemConstrain(theSystem, 2 * node + 1, value * nx);
+    }
+    if (type == DIRICHLET_NT) {
+      double value_n = theConstrainedNode->value1;
+      double value_t = theConstrainedNode->value2;
+      double nx = theConstrainedNode->nx;
+      double ny = theConstrainedNode->ny;
+      // A completer :-)
+      //femFullSystemConstrain(theSystem, 2 * node + 0, value_n * nx + value_t * ny);
+      //femFullSystemConstrain(theSystem, 2 * node + 1, value_n * ny + value_t * nx);
+      femBandSystemConstrain(theSystem, 2 * node + 0, value_n * nx + value_t * ny);
+      femBandSystemConstrain(theSystem, 2 * node + 1, value_n * ny + value_t * nx);
+    }
+  }
 }
 
-void geoMeshGenerateGeo(void) {
-  femGeo *theGeometry = geoGetGeometry();
-  double Lx = 1.0;
-  double Ly = 1.0;
-  theGeometry->LxPlate = Lx;
-  theGeometry->LyPlate = Ly;
-  theGeometry->h = Lx * 0.05;
-  theGeometry->elementType = FEM_QUAD;
+double *femElasticitySolve(femProblem *theProblem) {
+  femRenumType renumType = FEM_XNUM;
+  femMesh *theMesh = theProblem->geometry->theElements;
+    
+  femMeshRenumber(theMesh, renumType);
 
-  geoSetSizeCallback(geoSize);
+  femElasticityAssembleElements(theProblem);
+  femElasticityAssembleNeumann(theProblem);
+  femElasticityApplyDirichlet(theProblem);
 
-  /*
-  4 ------------------ 3
-  |                    |
-  |                    |
-  5 ------- 6          |
-             \         |
-              )        |
-             /         |
-  8 ------- 7          |
-  |                    |
-  |                    |
-  1 ------------------ 2
-  */
+  //double *soluce = femFullSystemEliminate(theProblem->system);
 
-  int ierr;
-  double w = theGeometry->LxPlate;
-  double h = theGeometry->LyPlate;
-  double r = w / 4;
-  double lc = theGeometry->h;
-
-  int p1 = gmshModelGeoAddPoint(-w / 2, -h / 2, 0., lc, 1, &ierr);
-  int p2 = gmshModelGeoAddPoint(w / 2, -h / 2, 0., lc, 2, &ierr);
-  int p3 = gmshModelGeoAddPoint(w / 2, h / 2, 0., lc, 3, &ierr);
-  int p4 = gmshModelGeoAddPoint(-w / 2, h / 2, 0., lc, 4, &ierr);
-  int p5 = gmshModelGeoAddPoint(-w / 2, r, 0., lc, 5, &ierr);
-  int p6 = gmshModelGeoAddPoint(0., r, 0., lc, 6, &ierr);
-  int p7 = gmshModelGeoAddPoint(0., -r, 0., lc, 7, &ierr);
-  int p8 = gmshModelGeoAddPoint(-w / 2, -r, 0., lc, 8, &ierr);
-  int p9 = gmshModelGeoAddPoint(0., 0., 0., lc, 9, &ierr); // center of circle
-
-  int l1 = gmshModelGeoAddLine(p1, p2, 1, &ierr);
-  int l2 = gmshModelGeoAddLine(p2, p3, 2, &ierr);
-  int l3 = gmshModelGeoAddLine(p3, p4, 3, &ierr);
-  int l4 = gmshModelGeoAddLine(p4, p5, 4, &ierr);
-  int l5 = gmshModelGeoAddLine(p5, p6, 5, &ierr);
-  int l6 = gmshModelGeoAddCircleArc(p7, p9, p6, 6, 0., 0., 0., &ierr); // NB : the direction of the curve is reversed
-  int l7 = gmshModelGeoAddLine(p7, p8, 7, &ierr);
-  int l8 = gmshModelGeoAddLine(p8, p1, 8, &ierr);
-
-  int lTags[] = {l1, l2, l3, l4, l5, -l6, l7, l8}; // NB : "-l6" because the curve is reversed
-  int c1[] = {1};
-  c1[0] = gmshModelGeoAddCurveLoop(lTags, 8, 1, 0, &ierr);
-  int s1 = gmshModelGeoAddPlaneSurface(c1, 1, 1, &ierr);
-  gmshModelGeoSynchronize(&ierr);
-
-  if (theGeometry->elementType == FEM_QUAD) {
-    gmshOptionSetNumber("Mesh.SaveAll", 1, &ierr);
-    gmshOptionSetNumber("Mesh.RecombineAll", 1, &ierr);
-    gmshOptionSetNumber("Mesh.Algorithm", 8, &ierr);
-    gmshOptionSetNumber("Mesh.RecombinationAlgorithm", 1.0, &ierr);
-    gmshModelGeoMeshSetRecombine(2, 1, 45, &ierr);
-    gmshModelMeshGenerate(2, &ierr);
-  }
-
-  if (theGeometry->elementType == FEM_TRIANGLE) {
-    gmshOptionSetNumber("Mesh.SaveAll", 1, &ierr);
-    gmshModelMeshGenerate(2, &ierr);
-  }
-
-  //   gmshFltkRun(&ierr);
-}
-
-void geoMeshGenerateGeoFile(const char *filename) {
-  femGeo *theGeometry = geoGetGeometry();
-  int ierr;
-  gmshOpen(filename, &ierr);
-  ErrorGmsh(ierr);
-  if (theGeometry->elementType == FEM_QUAD) {
-    gmshOptionSetNumber("Mesh.SaveAll", 1, &ierr);
-    gmshOptionSetNumber("Mesh.RecombineAll", 1, &ierr);
-    gmshOptionSetNumber("Mesh.Algorithm", 8, &ierr);
-    gmshOptionSetNumber("Mesh.RecombinationAlgorithm", 1.0, &ierr);
-    gmshModelGeoMeshSetRecombine(2, 1, 45, &ierr);
-    gmshModelMeshGenerate(2, &ierr);
-  }
-
-  if (theGeometry->elementType == FEM_TRIANGLE) {
-    gmshOptionSetNumber("Mesh.SaveAll", 1, &ierr);
-    gmshModelMeshGenerate(2, &ierr);
-  }
-  return;
-}
-
-void geoMeshGenerateMshFile(const char *filename) {
-  int ierr;
-  gmshOpen(filename, &ierr);
-  ErrorGmsh(ierr);
-  return;
+  //printf("bandSystem ", theProblem->bandSystem->B[0]);
+  femBandSystemPrintInfos(theProblem->bandSystem);
+  double *soluce = femBandSystemEliminate(theProblem->bandSystem);
+  memcpy(theProblem->soluce, soluce, theProblem->bandSystem->size * sizeof(double));
+  return theProblem->soluce;
 }
